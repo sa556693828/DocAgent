@@ -2,17 +2,13 @@ import os
 from dotenv import load_dotenv
 from langchain import hub
 from langchain.tools.retriever import create_retriever_tool
-from langchain_chroma import Chroma
-from langchain_community.vectorstores import FAISS
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import tool
 from langchain_core.prompts import (
     ChatPromptTemplate,
     MessagesPlaceholder,
-    PromptTemplate,
 )
 from langchain_core.chat_history import (
     BaseChatMessageHistory,
@@ -20,8 +16,6 @@ from langchain_core.chat_history import (
 )
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_ollama import OllamaEmbeddings
-from langchain.chains import create_retrieval_chain
 from langchain_community.chat_message_histories import SQLChatMessageHistory
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -37,7 +31,7 @@ os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
 os.environ["ANTHROPIC_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
 
 
-# 接claude
+# LLM
 claudeModel = ChatAnthropic(model_name="claude-3-sonnet-20240229")
 gpt35Model = ChatOpenAI(model="gpt-3.5-turbo", temperature=0)
 # ollamaModel = Ollama(model="llama2")
@@ -58,7 +52,7 @@ def get_session_history(session_id):
 @tool
 def check_rule_by_supplier_name(supplier_name):
     """
-    根據供應商名稱查詢建檔規則
+    根據出版商名稱查詢建檔規則
     """
     client = MongoClient(
         "mongodb+srv://tommy:pN3hJwrbAnb4ESoV@test1.fjnut.mongodb.net/"
@@ -115,39 +109,51 @@ def compare_files_with_llm(file_path1):
         {"file": data, "csvData": csvData, "ruleData": rulesData},
         # config,
     )
-    print(output)
 
     return output
 
 
 @tool
-def check_weather(location: str, at_time: datetime | None = None) -> float:
-    """Return the weather forecast for the specified location."""
-    return f"It's always sunny in {location}"
+def retrieve_supplier_name(file_path1) -> str:
+    """
+    讀取用戶資料，找出出版商名稱
+    """
+    llm = ChatOpenAI(temperature=0, model="gpt-3.5-turbo")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=10)
+    userFile = Docx2txtLoader(file_path1)
+    userFileData = userFile.load()
+    data = text_splitter.split_documents(userFileData)
+    system_prompt = "You are an assistant for retrieve data!"
+
+    retrieve_prompt_template = ChatPromptTemplate.from_messages(
+        [
+            (
+                "system",
+                system_prompt,
+            ),
+            (
+                "human",
+                "幫我根據這份檔案{file}找出出版商名稱",
+            ),
+        ]
+    )
+    retrieve_chain = retrieve_prompt_template | llm | StrOutputParser()
+    output = retrieve_chain.invoke(
+        {"file": data},
+    )
+
+    return output
 
 
-tools = [check_weather, check_rule_by_supplier_name, compare_files_with_llm]
+tools = [
+    retrieve_supplier_name,
+    check_rule_by_supplier_name,
+    compare_files_with_llm,
+]
 
 # Prompt
 # prompt = hub.pull('hwchase17/openai-functions-agent')
 # prompt = hub.pull("rlm/rag-prompt")
-RAG_system_prompt = (
-    "You are an assistant for question-answering tasks. "
-    "Use the following pieces of retrieved context to answer "
-    "the question. If you don't know the answer, say that you "
-    "don't know. Use three sentences maximum and keep the "
-    "answer concise."
-    "\n\n"
-    "{context}"
-)
-
-RAG_prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", RAG_system_prompt),
-        ("human", "{input}"),
-    ]
-)
-
 
 # prompt = ChatPromptTemplate.from_messages(
 #     [
@@ -162,22 +168,6 @@ RAG_prompt = ChatPromptTemplate.from_messages(
 # )
 
 # Use the agent
-
-# RAG chain
-# question_answer_chain = create_stuff_documents_chain(gpt35Model, RAG_prompt)
-# rag_chain = create_retrieval_chain(retriever, question_answer_chain)
-# response = rag_chain.invoke({"input": "這本書的書名是什麼？"})
-# print(response["answer"])
-# for document in response["context"]:
-#     print(document)
-#     print()
-# for chunk in rag_chain.stream("這本書的書名是什麼？"):
-#     print(chunk, end="", flush=True)
-# retriever_tool = create_retriever_tool(
-#     retriever,
-#     "langsmith_search",  # name
-#     "Search for information about LangSmith. For any questions about LangSmith, you must use this tool!",  # description
-# )
 # chain = prompt | claudeModel | StrOutputParser()
 # with_message_history = RunnableWithMessageHistory(
 #     chain,
@@ -187,12 +177,17 @@ RAG_prompt = ChatPromptTemplate.from_messages(
 #     # output_messages_key="answer",
 # )
 
-system_prompt = "You are an assistant for retrieve data."
+system_prompt = """
+    根據用戶資料中的出版商名稱查詢建檔規則，
+    如果有查到就只回傳建檔規則不要加任何文字，
+    如果沒有就比較用戶提供的文件與標準格式生成轉換規則，
+    並且回傳轉換規則
+"""
 graph = create_react_agent(gpt35Model, tools, state_modifier=system_prompt)
 inputs = {
-    "messages": [("user", "這本書的書名是什麼？")]
-    + [("human", "file_path: ./doc/上誼.docx")]
+    "messages": [("user", "此為新書資料")] + [("human", "file_path: ./doc/上誼.docx")]
 }
+
 for s in graph.stream(inputs, stream_mode="values"):
     message = s["messages"][-1]
     if isinstance(message, tuple):
