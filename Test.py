@@ -39,6 +39,19 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+# prompt = ChatPromptTemplate.from_messages(
+#     [
+#         (
+#             "system",
+#             # "Based on the table schema below, write a SQL query that would answer the user's question: {db_schema}",
+#             "You are a helpful assistant.",
+#         ),
+#         MessagesPlaceholder(variable_name="chat_history"),
+#         ("user", "{input}"),
+#     ]
+# )
+
+
 chain = prompt | model
 
 with_message_history = RunnableWithMessageHistory(
