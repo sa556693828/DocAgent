@@ -1,31 +1,33 @@
-from pymongo import MongoClient
-from dotenv import load_dotenv
+from bson.objectid import ObjectId
+import base64
 import os
+from dotenv import load_dotenv
+from langchain import hub
+from langchain.tools.retriever import create_retriever_tool
+from langchain_core.output_parsers import StrOutputParser
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_anthropic import ChatAnthropic
+from langchain_core.tools import tool
+from langchain_core.prompts import (
+    ChatPromptTemplate,
+    MessagesPlaceholder,
+)
+from langchain_community.chat_message_histories import SQLChatMessageHistory
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, TextLoader
+from pymongo import MongoClient
+from bson.objectid import ObjectId
+import base64
+from langchain_community.docstore.in_memory import InMemoryDocstore
+from langchain_community.vectorstores import FAISS
+from google.cloud import storage
+from langchain_google_community import GCSFileLoader
 
 load_dotenv()
 mongoUrl = os.environ["MONGO_URI"] = os.getenv("MONGO_URI")
-
-# def check_rule_by_supplier_name(supplier_name):
-#     """
-#     根據出版商名稱查詢建檔規則
-#     """
-#     client = MongoClient(
-#         "mongodb+srv://tommy:pN3hJwrbAnb4ESoV@test1.fjnut.mongodb.net/"
-#     )
-#     db = client["test"]
-#     collection = db["rules"]
-#     query = {"supplier_name": supplier_name}
-#     results = collection.find(query)
-#     print(results)
-#     rules_list = []
-#     for result in results:
-#         print(result)
-#         rules_list.append(result.get("rules", []))
-#     return rules_list
-
-
-# results = check_rule_by_supplier_name("上誼文化")
-# print(results)
+key = os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv(
+    "GOOGLE_APPLICATION_CREDENTIALS"
+)
 
 
 def insert_collected_content():
@@ -116,4 +118,96 @@ def insert_collected_content():
         return "插入資料失敗"
 
 
-insert_collected_content()
+def get_file_from_db(file_id: str):
+    client = MongoClient(mongoUrl)
+    db = client["DocAgent"]
+    collection = db["input_files"]
+    query = {"_id": ObjectId(file_id)}
+    results = collection.find_one(query)
+    if results and "base64" in results:
+        base64_content = results["base64"]
+    decoded_content = base64.b64decode(base64_content.strip())
+    decoded_content.write("test.txt")
+    # 不能轉utf-8 圖片
+    loader = TextLoader(decoded_content)
+    documents = loader.load()
+    userFile = Docx2txtLoader(decoded_content)
+    userFileData = userFile.load()
+    print(userFileData)
+    # return userFileData
+
+
+def get_file_from_db_and_download(file_id: str):
+    client = MongoClient(mongoUrl)
+    db = client["DocAgent"]
+    collection = db["input_files"]
+    query = {"_id": ObjectId(file_id)}
+    results = collection.find_one(query)
+    if results and "name" in results:
+        file_name = results["name"]
+    print(file_name)
+    storage_client = storage.Client.from_service_account_json(key)
+    bucket = storage_client.bucket("docagent_files")
+    blob = bucket.blob(file_name)
+    path = f"./newDoc/{file_name}"
+    blob.download_to_filename(path)
+    print(path)
+    return path
+
+
+get_file_from_db_and_download("66cf01306b53a473f75c17f0")
+
+# https://storage.googleapis.com/docagent_files/九歌資料.doc
+# print(get_file_from_db("66cc408af37ae48692574c05"))
+# 66cc4912de834ca5ed77877e
+# 66cc408af37ae48692574c05
+# 66cc408af37ae48692574c04
+
+
+# def retrieve_supplier_name(file) -> str:
+#     """
+#     讀取用戶資料，找出出版商名稱
+#     """
+#     llm = ChatOpenAI(temperature=0, model="gpt-4o-mini")
+#     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+#     userFile = Docx2txtLoader(file)
+#     userFileData = userFile.load()
+#     data = text_splitter.split_documents(userFileData)
+#     vectorstore = FAISS.from_documents(data, OpenAIEmbeddings())
+#     retriever = vectorstore.as_retriever(
+#         search_type="similarity", search_kwargs={"k": 5}
+#     )
+
+#     system_prompt = """
+#     You are an assistant for question-answering tasks
+#     """
+
+#     retrieve_prompt_template = ChatPromptTemplate.from_messages(
+#         [
+#             (
+#                 "system",
+#                 system_prompt,
+#             ),
+#             (
+#                 "human",
+#                 """
+#                 Use the following pieces of retrieved context to answer the question.
+#                 If you don't know the answer, just say that you don't know. Use three sentences maximum and keep the answer concise.
+#                 Question: 幫我找出這本書的出版商名稱或是供應商名稱
+
+#                 Context: {context}
+#                 """,
+#             ),
+#         ]
+#     )
+#     retrieve_chain = retrieve_prompt_template | llm | StrOutputParser()
+#     output = retrieve_chain.invoke(
+#         {"context": retriever},
+#         {"file": data},
+#     )
+
+#     return output
+
+
+# result = retrieve_supplier_name("./doc/大雁.docx")
+# print(result)

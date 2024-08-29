@@ -1,2 +1,5 @@
 .env
 /doc
+/newDoc
+memory.db
+docAgen_key.json
