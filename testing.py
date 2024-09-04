@@ -1,4 +1,3 @@
-from bson.objectid import ObjectId
 import base64
 import os
 from dotenv import load_dotenv
@@ -8,20 +7,23 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_anthropic import ChatAnthropic
 from langchain_core.tools import tool
-from langchain_core.prompts import (
-    ChatPromptTemplate,
-    MessagesPlaceholder,
-)
+from langchain_openai import OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma, FAISS
 from langchain_community.chat_message_histories import SQLChatMessageHistory
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, TextLoader
+from langchain_community.document_loaders import (
+    Docx2txtLoader,
+    TextLoader,
+    PyPDFLoader,
+)
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 import base64
 from langchain_community.docstore.in_memory import InMemoryDocstore
-from langchain_community.vectorstores import FAISS
 from google.cloud import storage
-from langchain_google_community import GCSFileLoader
+from langchain_openai import ChatOpenAI
+from langchain_core.prompts import ChatPromptTemplate
+import certifi
+import json
 
 load_dotenv()
 mongoUrl = os.environ["MONGO_URI"] = os.getenv("MONGO_URI")
@@ -138,24 +140,151 @@ def get_file_from_db(file_id: str):
 
 
 def get_file_from_db_and_download(file_id: str):
-    client = MongoClient(mongoUrl)
+    print(file_id)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["input_files"]
     query = {"_id": ObjectId(file_id)}
     results = collection.find_one(query)
+    print(results)
     if results and "name" in results:
         file_name = results["name"]
-    print(file_name)
     storage_client = storage.Client.from_service_account_json(key)
     bucket = storage_client.bucket("docagent_files")
     blob = bucket.blob(file_name)
     path = f"./newDoc/{file_name}"
     blob.download_to_filename(path)
-    print(path)
     return path
 
 
-get_file_from_db_and_download("66cf01306b53a473f75c17f0")
+def get_tags_collection() -> str:
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
+    db = client["prompt"]
+    collection = db["tags_collection"]
+    query = {}
+    results = collection.find(query)
+    return [result for result in results]
+
+
+def articles_to_tags(themeWithTags: list, file_path: str) -> str:
+    llm = ChatOpenAI(temperature=0, model="gpt-4o-mini")
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=30)
+
+    if file_path.endswith(".docx"):
+        userFile = Docx2txtLoader(file_path)
+    elif file_path.endswith(".pdf"):
+        userFile = PyPDFLoader(file_path)
+    else:
+        raise ValueError("Unsupported file format")
+
+    userFileData = userFile.load()
+    chunks = text_splitter.split_documents(userFileData)
+    all_outputs = []
+    # {json.dumps(theme)}
+
+    for theme in themeWithTags:
+        system_prompt = f"""
+        你是一个retriever助理，請根據用户提供的貼文，從以下theme+tags中找出符合此篇貼文的tags：
+        theme: {theme["theme"]}
+        tags: {theme["tags"]}
+        请按照以下格式返回结果：
+        theme: 主題
+        tags: 符合的tags
+        """
+        retrieve_prompt_template = ChatPromptTemplate.from_messages(
+            [
+                ("system", system_prompt),
+                ("human", "{chunks}"),
+            ]
+        )
+        retrieve_chain = retrieve_prompt_template | llm | StrOutputParser()
+        output = retrieve_chain.invoke(
+            {"chunks": "chunks"},
+        )
+        print(f"主题 '{theme}' 的输出: {output}")
+        all_outputs.append(output)
+
+    final_output = "\n".join(all_outputs)
+    return final_output
+
+
+themeTags = [
+    {
+        "_id": "66caf2015861ae56abc11082",
+        "theme": "Accommodation",
+        "tags": [
+            "landmark",
+            "style",
+            "transportation",
+            "romantic",
+            "culture",
+            "work",
+            "pet-friendly",
+            "shopping",
+            "budget-friendly",
+            "dining",
+            "long-term",
+            "payment",
+            "B&B",
+            "resort",
+            "hostel",
+            "hotel",
+            "villa",
+            "eco",
+            "facilities",
+            "short stay",
+            "smoke-free",
+            "health",
+        ],
+    },
+    {
+        "_id": "66caf2015861ae56abc11083",
+        "theme": "Budget",
+        "tags": ["budget-friendly", "normal", "high-budget", "no-budget"],
+    },
+    {
+        "_id": "66caf2015861ae56abc11084",
+        "theme": "Frequency",
+        "tags": ["first time", "few times", "often"],
+    },
+    {
+        "_id": "66caf2015861ae56abc11085",
+        "theme": "Type",
+        "tags": [
+            "relaxation",
+            "culture",
+            "shopping",
+            "self",
+            "work",
+            "visiting",
+            "adventure",
+            "nature",
+            "family",
+            "spring",
+            "autumn",
+            "summer",
+            "winter",
+        ],
+    },
+    {
+        "_id": "66caf2015861ae56abc11086",
+        "theme": "Ticket",
+        "tags": [
+            "network card",
+            "train",
+            "subway",
+            "bus",
+            "plane",
+            "boat",
+            "car rental",
+        ],
+    },
+]
+result = articles_to_tags(themeTags, "./doc/tokyo2.docx")
+print(result)
+
+# result = get_tags_collection()
+# print(result)
 
 # https://storage.googleapis.com/docagent_files/九歌資料.doc
 # print(get_file_from_db("66cc408af37ae48692574c05"))

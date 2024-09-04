@@ -10,6 +10,7 @@ from typing import Any
 from langchain_openai import ChatOpenAI
 from langchain_community.document_loaders import Docx2txtLoader, CSVLoader, PyPDFLoader
 from pymongo import MongoClient
+import pymongo
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 import json
@@ -18,19 +19,19 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 from bson.objectid import ObjectId
-from google.cloud import storage
+from google.cloud import storage, exceptions as gcs_exceptions
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.pydantic_v1 import BaseModel
+import certifi
 
 load_dotenv()
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
 os.environ["LANGCHAIN_API_KEY"] = os.getenv("LANGCHAIN_API_KEY")
-os.environ["ANTHROPIC_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
+# os.environ["ANTHROPIC_API_KEY"] = os.getenv("ANTHROPIC_API_KEY")
 mongoUrl = os.environ["MONGO_URI"] = os.getenv("MONGO_URI")
 key = os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.getenv(
     "GOOGLE_APPLICATION_CREDENTIALS"
 )
-
 # LLM
 gpt4oModel = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
@@ -41,19 +42,32 @@ def get_file_from_db_and_download(file_id: str):
     """
     根據file_id查詢文件，並從bucket中下載，回傳file路徑
     """
-    client = MongoClient(mongoUrl)
-    db = client["DocAgent"]
-    collection = db["input_files"]
-    query = {"_id": ObjectId(file_id)}
-    results = collection.find_one(query)
-    if results and "name" in results:
+    try:
+        client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
+        db = client["DocAgent"]
+        collection = db["input_files"]
+        query = {"_id": ObjectId(file_id)}
+        results = collection.find_one(query)
+
+        if not results or "name" not in results:
+            return "錯誤：在數據庫中未找到指定的文件"
+
         file_name = results["name"]
-    storage_client = storage.Client.from_service_account_json(key)
-    bucket = storage_client.bucket("docagent_files")
-    blob = bucket.blob(file_name)
-    path = f"./newDoc/{file_name}"
-    blob.download_to_filename(path)
-    return path
+
+        storage_client = storage.Client.from_service_account_json(key)
+        bucket = storage_client.bucket("docagent_files")
+        blob = bucket.blob(file_name)
+        path = f"./newDoc/{file_name}"
+
+        blob.download_to_filename(path)
+        return path
+
+    except pymongo.errors.PyMongoError as e:
+        return f"數據庫錯誤：{str(e)}"
+    except gcs_exceptions.GoogleCloudError as e:
+        return f"Google Cloud Storage錯誤：{str(e)}"
+    except Exception as e:
+        return f"未知錯誤：{str(e)}"
 
 
 @tool
@@ -102,7 +116,7 @@ def check_rule_by_supplier_name(supplier_name) -> list:
     """
     根據出版商名稱查詢建檔規則
     """
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["suppliers"]
     query = {"supplier_name": supplier_name}
@@ -175,7 +189,7 @@ def insert_rule_by_supplier_name(supplier_name: str, rule: str):
     """
     根據出版商名稱插入建檔規則
     """
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["suppliers"]
     new_data = {"supplier_name": supplier_name, "rule": rule}
@@ -238,7 +252,7 @@ def transform_data(file_path1: str, rule: str) -> str:
 @tool
 def insert_collected_content(content: str):
     """Insert collected content into MongoDB"""
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["standard_form"]
     new_data = json.loads(content)
@@ -281,12 +295,13 @@ prompt = ChatPromptTemplate.from_messages(
     ]
 )
 
+
 # Use the agent
 agent = create_tool_calling_agent(gpt4oModel, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools)
 
 app = FastAPI(
-    title="LangChain Server",
+    title="DocAgent",
     version="1.0",
     description="A simple api server using Langchain's Runnable interfaces",
 )
@@ -333,7 +348,7 @@ add_routes(
         {"run_name": "agent"}
     ),
     path="/docAgent",
-    dependencies=[Depends(verify_api_key)],
+    # dependencies=[Depends(verify_api_key)],
 )
 
 

@@ -19,16 +19,9 @@ from pymongo import MongoClient
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import create_react_agent
 import json
-from langserve import add_routes
-from fastapi import Depends, FastAPI, Header, HTTPException
-from typing import Optional
-from fastapi.middleware.cors import CORSMiddleware
 from bson.objectid import ObjectId
-import base64
 from google.cloud import storage
-from langchain_google_community import GCSFileLoader
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain.pydantic_v1 import BaseModel
+import certifi
 
 load_dotenv()
 os.environ["LANGCHAIN_TRACING_V2"] = "true"
@@ -62,7 +55,7 @@ def check_rule_by_supplier_name(supplier_name) -> list:
     """
     根據出版商名稱查詢建檔規則
     """
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["suppliers"]
     query = {"supplier_name": supplier_name}
@@ -78,7 +71,7 @@ def get_file_from_db_and_download(file_id: str):
     """
     根據file_id查詢文件，並從bucket中下載，回傳file路徑
     """
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["input_files"]
     query = {"_id": ObjectId(file_id)}
@@ -98,7 +91,7 @@ def insert_rule_by_supplier_name(supplier_name: str, rule: str):
     """
     根據出版商名稱插入建檔規則
     """
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["suppliers"]
     new_data = {"supplier_name": supplier_name, "rule": rule}
@@ -112,7 +105,7 @@ def insert_rule_by_supplier_name(supplier_name: str, rule: str):
 @tool
 def insert_collected_content(content: str):
     """Insert collected content into MongoDB"""
-    client = MongoClient(mongoUrl)
+    client = MongoClient(mongoUrl, tlsCAFile=certifi.where())
     db = client["DocAgent"]
     collection = db["standard_form"]
     new_data = json.loads(content)
@@ -348,7 +341,7 @@ system_prompt = """
 graph = create_react_agent(gpt4oModel, tools, state_modifier=system_prompt)
 inputs = {
     "messages": [("user", "此為新書資料")]
-    + [("human", "file_id: [66cf01306b53a473f75c17f0]")]
+    + [("human", "file_id: [66d03c3db3bdb368e9bbf2f9]")]
 }
 for s in graph.stream(inputs, stream_mode="values"):
     message = s["messages"][-1]
